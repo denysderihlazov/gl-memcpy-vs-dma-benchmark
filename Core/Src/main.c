@@ -21,7 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <string.h>
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,7 +45,14 @@ UART_HandleTypeDef huart1;
 
 DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 /* USER CODE BEGIN PV */
+#define MAX_BUF_SIZE 16384
+#define NUM_TESTS    13
 
+// 4 bytes align
+__attribute__((aligned(4))) uint8_t src_buf[MAX_BUF_SIZE];
+__attribute__((aligned(4))) uint8_t dst_buf[MAX_BUF_SIZE];
+
+uint16_t test_sizes[NUM_TESTS] = {4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -53,7 +61,7 @@ static void MX_DMA_Init(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Init_DWT(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -94,6 +102,57 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
+
+  // Fill array with data
+  for(int i = 0; i < MAX_BUF_SIZE; i++) {
+    src_buf[i] = (uint8_t)(i & 0xFF);
+  }
+
+  // Initialize hardware cycle counter (DWT)
+  Init_DWT();
+
+  // Allow voltage and UART to stabilize
+  HAL_Delay(500);
+
+  printf("\r\n--- START BENCHMARK (Milestone 1) ---\r\n");
+  printf("Size,Memcpy_Ticks,DMA_HAL_Ticks\r\n");
+
+  for (int s = 0; s < NUM_TESTS; s++) {
+    uint16_t size = test_sizes[s];
+    uint32_t start, stop;
+   	uint32_t t_memcpy, t_dma_hal;
+
+    memset(dst_buf, 0, MAX_BUF_SIZE);
+   	HAL_Delay(5);
+
+   	// --- METHOD 1: Memcpy ---
+    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
+    start = DWT->CYCCNT;
+
+    memcpy(dst_buf, src_buf, size);
+
+    stop = DWT->CYCCNT;
+   	HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
+    t_memcpy = stop - start;
+
+    HAL_Delay(5);
+
+    // --- METHOD 2: DMA HAL ---
+    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
+    start = DWT->CYCCNT;
+
+    HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)src_buf, (uint32_t)dst_buf, size);
+    HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
+
+    stop = DWT->CYCCNT;
+    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
+    t_dma_hal = stop - start;
+
+    printf("%d,%lu,%lu\r\n", size, t_memcpy, t_dma_hal);
+    HAL_Delay(10);
+  }
+  printf("--- BENCHMARK END ---\r\n");
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -256,6 +315,31 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+ * @brief  Initialize ARM Cortex-M Data Watchpoint and Trace (DWT) unit
+ * to utilize the high-resolution hardware cycle counter.
+ */
+void Init_DWT(void) {
+    /* Enable TRCENA bit in Debug Exception and Monitor Control Register (DEMCR) */
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+    /* Enable CYCCNTENA bit in DWT Control Register to start cycle counter */
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    /* Clear CPU cycle counter register */
+    DWT->CYCCNT = 0;
+}
+
+/**
+ * @brief  Low-level system write function to retarget printf to USART1.
+ * Overriding _write avoids multiple definition conflicts with BSP drivers.
+ */
+int _write(int file, char *ptr, int len) {
+    /* Transmit the string buffer over USART1 via polling mode */
+    HAL_UART_Transmit(&huart1, (uint8_t *)ptr, len, HAL_MAX_DELAY);
+    return len;
+}
 
 /* USER CODE END 4 */
 

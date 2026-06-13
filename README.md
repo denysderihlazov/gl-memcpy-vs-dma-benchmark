@@ -24,6 +24,7 @@ UART output is used only after each measurement to export results in CSV format,
 ## Hardware Setup
 
 - MCU: STM32F407VGT6
+- System Clock: 16 MHz HSI (Baseline for Milestone 1 infrastructure testing)
 - DMA configuration: Memory-to-Memory
 - DMA data width: 8-bit / Byte
 - Measurement: internal `DWT->CYCCNT` cycle counter
