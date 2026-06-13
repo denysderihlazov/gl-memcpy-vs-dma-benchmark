@@ -47,8 +47,12 @@ DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 /* USER CODE BEGIN PV */
 #define MAX_BUF_SIZE 16384
 #define NUM_TESTS    13
+#define REPEATS        10
+#define REPEAT_GAP_MS  1
+#define METHOD_GAP_MS  5
+#define SIZE_GAP_MS    20
 
-// 4 bytes align
+// 4-byte aligned buffers
 __attribute__((aligned(4))) uint8_t src_buf[MAX_BUF_SIZE];
 __attribute__((aligned(4))) uint8_t dst_buf[MAX_BUF_SIZE];
 
@@ -102,7 +106,6 @@ int main(void)
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  extern DMA_HandleTypeDef hdma_memtomem_dma2_stream0;
 
   // Fill array with data
   for(int i = 0; i < MAX_BUF_SIZE; i++) {
@@ -115,44 +118,107 @@ int main(void)
   // Allow voltage and UART to stabilize
   HAL_Delay(500);
 
-  printf("\r\n--- START BENCHMARK (Milestone 1) ---\r\n");
-  printf("Size,Memcpy_Ticks,DMA_HAL_Ticks\r\n");
+  printf("\r\n--- START BENCHMARK (Milestone 1, repeated measurements 10 times) ---\r\n");
+  printf("Size,Memcpy_Min,Memcpy_Avg,DMA_HAL_Min,DMA_HAL_Avg\r\n");
 
   for (int s = 0; s < NUM_TESTS; s++) {
     uint16_t size = test_sizes[s];
-    uint32_t start, stop;
-   	uint32_t t_memcpy, t_dma_hal;
 
-    memset(dst_buf, 0, MAX_BUF_SIZE);
-   	HAL_Delay(5);
+    uint32_t memcpy_min = 0xFFFFFFFFU;
+    uint32_t dma_min = 0xFFFFFFFFU;
 
-   	// --- METHOD 1: Memcpy ---
-    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
-    start = DWT->CYCCNT;
+    uint64_t memcpy_sum = 0;
+    uint64_t dma_sum = 0;
 
-    memcpy(dst_buf, src_buf, size);
+    // --- METHOD 1: Memcpy ---
+    for (int r = 0; r < REPEATS; r++) {
+      uint32_t start, stop;
+      uint32_t ticks;
 
-    stop = DWT->CYCCNT;
-   	HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
-    t_memcpy = stop - start;
+      memset(dst_buf, 0, size);
+      HAL_Delay(REPEAT_GAP_MS);
 
-    HAL_Delay(5);
+      HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
+      start = DWT->CYCCNT;
+
+      memcpy(dst_buf, src_buf, size);
+
+      stop = DWT->CYCCNT;
+      HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
+
+      // Data integrity check
+      if ((dst_buf[0] != src_buf[0]) ||
+          (dst_buf[size / 2] != src_buf[size / 2]) ||
+          (dst_buf[size - 1] != src_buf[size - 1])) {
+        Error_Handler();
+      }
+
+      ticks = stop - start;
+      memcpy_sum += ticks;
+
+      if (ticks < memcpy_min) {
+        memcpy_min = ticks;
+      }
+    }
+
+    HAL_Delay(METHOD_GAP_MS);
 
     // --- METHOD 2: DMA HAL ---
-    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
-    start = DWT->CYCCNT;
+    for (int r = 0; r < REPEATS; r++) {
+      uint32_t start, stop;
+      uint32_t ticks;
 
-    HAL_DMA_Start(&hdma_memtomem_dma2_stream0, (uint32_t)src_buf, (uint32_t)dst_buf, size);
-    HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0, HAL_DMA_FULL_TRANSFER, HAL_MAX_DELAY);
+      memset(dst_buf, 0, size);
+      HAL_Delay(REPEAT_GAP_MS);
 
-    stop = DWT->CYCCNT;
-    HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
-    t_dma_hal = stop - start;
+      HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_SET);
+      start = DWT->CYCCNT;
 
-    printf("%d,%lu,%lu\r\n", size, t_memcpy, t_dma_hal);
-    HAL_Delay(10);
+      if (HAL_DMA_Start(&hdma_memtomem_dma2_stream0,
+                        (uint32_t)src_buf,
+                        (uint32_t)dst_buf,
+                        size) != HAL_OK) {
+        Error_Handler();
+      }
+
+      if (HAL_DMA_PollForTransfer(&hdma_memtomem_dma2_stream0,
+                                  HAL_DMA_FULL_TRANSFER,
+                                  HAL_MAX_DELAY) != HAL_OK) {
+        Error_Handler();
+      }
+
+      stop = DWT->CYCCNT;
+      HAL_GPIO_WritePin(MEAS_GPIO_Port, MEAS_Pin, GPIO_PIN_RESET);
+
+      if ((dst_buf[0] != src_buf[0]) ||
+          (dst_buf[size / 2] != src_buf[size / 2]) ||
+          (dst_buf[size - 1] != src_buf[size - 1])) {
+        Error_Handler();
+      }
+
+      ticks = stop - start;
+      dma_sum += ticks;
+
+      if (ticks < dma_min) {
+        dma_min = ticks;
+      }
+    }
+
+    uint32_t memcpy_avg = (uint32_t)(memcpy_sum / REPEATS);
+    uint32_t dma_avg = (uint32_t)(dma_sum / REPEATS);
+
+    printf("%u,%lu,%lu,%lu,%lu\r\n",
+           (unsigned int)size,
+           (unsigned long)memcpy_min,
+           (unsigned long)memcpy_avg,
+           (unsigned long)dma_min,
+           (unsigned long)dma_avg);
+
+    HAL_Delay(SIZE_GAP_MS);
   }
+
   printf("--- BENCHMARK END ---\r\n");
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
